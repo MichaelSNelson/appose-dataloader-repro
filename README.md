@@ -44,22 +44,38 @@ Exit codes:
 
 ## Observed behaviour
 
-On Windows (Python 3.12, PyTorch 2.10 CPU) and Linux (WSL2, Ubuntu 24.04):
+Reproduced on Linux (WSL2 Ubuntu 24.04, Python 3.12, PyTorch 2.10 CPU, default
+`fork` start method). Originally observed on Windows 10/11 (Python 3.11, PyTorch
+2.x CUDA, `spawn` start method) in the QuPath DL Pixel Classifier extension.
 
 ```
 [java] === Running task with num_workers=0 (timeout 30s) ===
-[py-stderr] [py] torch=2.10.x platform=win32 pid=... start_method=None num_workers=0 ...
-[py-stderr] [py] DataLoader constructed in 0.00s; fetching 2 batch(es)...
-[py-stderr] [py] first batch shape=(4, 3, 32, 32) in 0.0xs
-[py-stderr] [py] done
+[py] torch=2.10.0 platform=linux pid=... start_method=None num_workers=0 ...
+[py] DataLoader constructed in 0.00s; fetching 2 batch(es)...
+[py] first batch shape=(4, 3, 32, 32) in 0.00s
+[py] batch 2/2 ok
+[py] done
 [java] [evt] COMPLETION status=COMPLETE
 
-[java] === Running task with num_workers=2 (timeout 60s) ===
-[py-stderr] [py] torch=2.10.x platform=win32 pid=... start_method=None num_workers=2 ...
-[py-stderr] [py] DataLoader constructed in 0.0xs; fetching 2 batch(es)...
+[java] === Running task with num_workers=2 (timeout 45s) ===
+[py] torch=2.10.0 platform=linux pid=... start_method=None num_workers=2 ...
+[py] DataLoader constructed in 0.00s; fetching 2 batch(es)...
 <no further output -- hangs>
-[java] HANG: task still running after 60s -- calling cancel()
+[java] HANG: task still running after 45s -- calling cancel()
 ```
+
+```
+SUMMARY
+  num_workers=0 : status=COMPLETE, total=2.04s
+  num_workers=2 : status=RUNNING, elapsed=45.00s  (hung, cancelled)
+```
+
+Because the hang reproduces under `fork` (Linux default), the issue is not
+exclusively about Windows `spawn` re-importing the worker module. Both start
+methods interact with Appose's stdin/stdout-based JSON protocol; under
+`fork`, the children inherit file descriptors for the pipe Appose uses. Under
+`spawn`, they re-exec the interpreter, which triggers Appose's bootstrap a
+second time. Both paths appear to deadlock.
 
 ## Context
 

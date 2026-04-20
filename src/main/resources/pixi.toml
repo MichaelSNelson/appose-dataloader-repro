@@ -1,4 +1,4 @@
-[project]
+[workspace]
 name = "appose-dataloader-repro"
 version = "0.1.0"
 channels = ["conda-forge"]
@@ -6,5 +6,6 @@ platforms = ["win-64", "linux-64", "osx-64", "osx-arm64"]
 
 [dependencies]
 python = "3.12.*"
+appose = ">=0.10.1"
 pytorch = ">=2.4,<3"
 numpy = "*"
