@@ -1,0 +1,10 @@
+.gradle/
+build/
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Appose pixi environment -- rebuilt on first run
+.pixi/
+pixi.lock
