@@ -115,6 +115,27 @@ Reproduced on Linux (WSL2 Ubuntu 24.04, Python 3.12, PyTorch 2.10 CPU, default
 `fork` start method). Originally observed on Windows 10/11 (Python 3.11, PyTorch
 2.x CUDA, `spawn` start method) in the QuPath DL Pixel Classifier extension.
 
+### Windows 11 + Python 3.14 + PyTorch 2.10 (April 2026)
+
+The first version of this repro defined a `Dataset` subclass directly in
+the task script. On Windows that hits a separate failure mode -- a pickling
+error -- before the hang can manifest, because Windows + `spawn` requires
+multiprocessing to pickle the dataset by qualified name and a class
+defined in the exec'd `<string>` script does not have an importable
+qualified name:
+
+```
+_pickle.PicklingError: Can't pickle <class 'SyntheticDataset'>: attribute
+lookup SyntheticDataset on builtins failed
+```
+
+The current repro uses `torch.utils.data.TensorDataset` (a real class in a
+real module, fully picklable) so spawned children get past the bootstrap
+pickle step and we actually reach the hang point on Windows. The earlier
+pickle error is recorded here because it's a separate gotcha worth
+documenting: any user who defines their dataset class inside an Appose
+task script will see that error on Windows / macOS rather than the hang.
+
 ```
 [java] === Running task with num_workers=0 (timeout 30s) ===
 [py] torch=2.10.0 platform=linux pid=... start_method=None num_workers=0 ...

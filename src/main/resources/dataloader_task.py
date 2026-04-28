@@ -20,7 +20,7 @@ import platform as _platform
 
 import torch
 import torch.multiprocessing as tmp
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
 
 # Side-channel diagnostic log. Spawned DataLoader children cannot write to
@@ -91,20 +91,6 @@ _clog(f"script import: start_method={tmp.get_start_method(allow_none=True)} "
 print(f"[py] CHILD_LOG_PATH={_CHILD_LOG_PATH}", file=sys.stderr, flush=True)
 
 
-class SyntheticDataset(Dataset):
-    def __init__(self, n=64):
-        self._n = n
-
-    def __len__(self):
-        return self._n
-
-    def __getitem__(self, idx):
-        # Trivial per-item work so worker processes actually do something.
-        x = torch.randn(3, 32, 32)
-        y = torch.zeros(1, dtype=torch.long)
-        return x, y
-
-
 t_setup_start = time.time()
 
 # Appose injects these names into the task namespace.
@@ -118,7 +104,17 @@ _log(f"torch={torch.__version__} platform={sys.platform} pid={os.getpid()} "
      f"start_method={start_method} num_workers={nw} batch_size={bs} "
      f"num_batches={nb} persistent_workers={pw}")
 
-ds = SyntheticDataset(n=max(64, bs * nb * 4))
+# Use TensorDataset (a real class in torch.utils.data) rather than a
+# script-defined Dataset subclass. On Windows + spawn, multiprocessing
+# pickles the dataset by qualified name -- script-defined classes live in
+# the synthetic <string> module and fail to pickle, masking the actual
+# DataLoader hang we want to investigate. TensorDataset is fully picklable
+# and lets the child get past spawn bootstrap.
+n = max(64, bs * nb * 4)
+ds = TensorDataset(
+    torch.randn(n, 3, 32, 32),
+    torch.zeros(n, 1, dtype=torch.long),
+)
 loader = DataLoader(
     ds,
     batch_size=bs,
