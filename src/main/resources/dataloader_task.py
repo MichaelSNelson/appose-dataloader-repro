@@ -115,6 +115,16 @@ ds = TensorDataset(
     torch.randn(n, 3, 32, 32),
     torch.zeros(n, 1, dtype=torch.long),
 )
+# worker_init_fn runs INSIDE every spawned child after spawn bootstrap
+# completes. It's PyTorch's official hook for child-side init, so it
+# observes children that the parent's class-level monkey-patches cannot
+# (spawn children re-exec python.exe and get a fresh stdlib). Writing to
+# the file log here proves whether children reach this point at all.
+def _worker_init(worker_id):
+    import os, sys, time
+    _clog(f"WORKER_INIT fired worker_id={worker_id} sys.stdin={sys.stdin!r} "
+          f"isatty={getattr(sys.stdin, 'isatty', lambda: '?')()}")
+
 loader = DataLoader(
     ds,
     batch_size=bs,
@@ -122,11 +132,44 @@ loader = DataLoader(
     persistent_workers=(pw and nw > 0),
     shuffle=False,
     drop_last=False,
+    worker_init_fn=_worker_init if nw > 0 else None,
 )
 setup_seconds = time.time() - t_setup_start
 _log(f"DataLoader constructed in {setup_seconds:.2f}s; fetching {nb} batch(es)...")
 
+# Background thread that polls the worker processes from the parent's
+# perspective: PIDs, alive state, exit code. This catches the case where
+# children die silently before worker_init_fn runs.
+import threading as _threading
+def _poll_workers(loader_ref, deadline):
+    import time as _t
+    while _t.time() < deadline:
+        it_obj = getattr(loader_ref, "_iterator", None)
+        workers = getattr(it_obj, "_workers", None) if it_obj is not None else None
+        if workers:
+            for w in workers:
+                _clog(f"POLL worker pid={w.pid} alive={w.is_alive()} "
+                      f"exitcode={w.exitcode}")
+            return
+        _t.sleep(0.5)
+    _clog("POLL timeout: never observed loader._iterator._workers")
+_poll_thread = _threading.Thread(
+    target=_poll_workers,
+    args=(loader, time.time() + 30),
+    daemon=True,
+    name="appose-repro-worker-poller",
+)
+_poll_thread.start()
+
 it = iter(loader)
+# Re-poll once iter() returns (or never, if it hangs)
+_clog(f"iter(loader) returned; iterator type={type(it).__name__}")
+workers = getattr(it, "_workers", None)
+if workers:
+    for w in workers:
+        _clog(f"AFTER_ITER worker pid={w.pid} alive={w.is_alive()} "
+              f"exitcode={w.exitcode}")
+
 t_first = time.time()
 first_batch = next(it)
 first_batch_seconds = time.time() - t_first
