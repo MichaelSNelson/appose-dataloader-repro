@@ -134,23 +134,34 @@ _log(f"DataLoader constructed in {setup_seconds:.2f}s; fetching {nb} batch(es)..
 
 # Background thread that polls the worker processes from the parent's
 # perspective: PIDs, alive state, exit code. This catches the case where
-# children die silently before worker_init_fn runs.
+# children die silently or hang somewhere we cannot see directly. Polls
+# every 10 seconds for the full lifetime of the test (5 minutes), so we
+# can see whether workers stay alive throughout the apparent "hang"
+# window or actually die at some point.
 import threading as _threading
 def _poll_workers(loader_ref, deadline):
     import time as _t
+    last_pids = None
+    iter_observed = False
     while _t.time() < deadline:
         it_obj = getattr(loader_ref, "_iterator", None)
         workers = getattr(it_obj, "_workers", None) if it_obj is not None else None
         if workers:
-            for w in workers:
-                _clog(f"POLL worker pid={w.pid} alive={w.is_alive()} "
-                      f"exitcode={w.exitcode}")
-            return
-        _t.sleep(0.5)
-    _clog("POLL timeout: never observed loader._iterator._workers")
+            iter_observed = True
+            cur_pids = tuple((w.pid, w.is_alive(), w.exitcode) for w in workers)
+            if cur_pids != last_pids:
+                for w in workers:
+                    _clog(f"POLL worker pid={w.pid} alive={w.is_alive()} "
+                          f"exitcode={w.exitcode}")
+                last_pids = cur_pids
+        _t.sleep(10)
+    if not iter_observed:
+        _clog("POLL timeout: never observed loader._iterator._workers")
+    else:
+        _clog("POLL deadline reached; workers still alive throughout")
 _poll_thread = _threading.Thread(
     target=_poll_workers,
-    args=(loader, time.time() + 30),
+    args=(loader, time.time() + 300),
     daemon=True,
     name="appose-repro-worker-poller",
 )

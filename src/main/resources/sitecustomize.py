@@ -67,6 +67,28 @@ try:
 
     _BaseProcess._bootstrap = _instrumented_bootstrap
 
-    _slog("multiprocessing instrumentation installed")
+    # Process.run is called from _bootstrap AFTER _close_stdin returns.
+    # For DataLoader workers, this is where torch's _worker_loop actually
+    # starts pulling indices and producing batches. Seeing "run ENTER"
+    # without batches arriving means the child reached PyTorch's worker
+    # loop but its queue communication with the parent is broken.
+    _orig_run = _BaseProcess.run
+
+    def _instrumented_run(self):
+        _slog(f"run ENTER name={self.name} target={getattr(self, '_target', None)!r}")
+        t0 = time.time()
+        try:
+            rv = _orig_run(self)
+            _slog(f"run EXIT  in {time.time()-t0:.3f}s rv={rv!r}")
+            return rv
+        except BaseException as exc:
+            _slog(f"run RAISE in {time.time()-t0:.3f}s "
+                  f"{type(exc).__name__}: {exc}")
+            raise
+
+    _BaseProcess.run = _instrumented_run
+
+    _slog("multiprocessing instrumentation installed (close_stdin, "
+          "_bootstrap, run)")
 except Exception as _e:
     _slog(f"instrumentation install failed: {type(_e).__name__}: {_e}")

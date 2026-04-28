@@ -36,7 +36,12 @@ public class ApposeDataLoaderRepro {
     private static final long BASELINE_TIMEOUT_SEC = 30;
 
     public static void main(String[] args) throws Exception {
-        long hangTimeoutSec = args.length > 0 ? Long.parseLong(args[0]) : 60;
+        // Default 300s. On Windows + a heavy ML pixi env, multiprocessing
+        // spawn workers can take 30-90 seconds just to finish python.exe
+        // startup and import torch in each child. A short timeout (60s)
+        // can fire while workers are still legitimately starting up,
+        // false-positive as a hang.
+        long hangTimeoutSec = args.length > 0 ? Long.parseLong(args[0]) : 300;
 
         String pixiToml = readResource("/pixi.toml");
         String script = readResource("/dataloader_task.py");
