@@ -115,16 +115,12 @@ ds = TensorDataset(
     torch.randn(n, 3, 32, 32),
     torch.zeros(n, 1, dtype=torch.long),
 )
-# worker_init_fn runs INSIDE every spawned child after spawn bootstrap
-# completes. It's PyTorch's official hook for child-side init, so it
-# observes children that the parent's class-level monkey-patches cannot
-# (spawn children re-exec python.exe and get a fresh stdlib). Writing to
-# the file log here proves whether children reach this point at all.
-def _worker_init(worker_id):
-    import os, sys, time
-    _clog(f"WORKER_INIT fired worker_id={worker_id} sys.stdin={sys.stdin!r} "
-          f"isatty={getattr(sys.stdin, 'isatty', lambda: '?')()}")
-
+# NOTE on worker_init_fn: PyTorch's child-side init hook would be the
+# cleanest way to observe what spawned children see. But on Windows + spawn
+# the function must pickle by qualified name, and any function defined in
+# the exec'd Appose <string> task script fails to pickle just like a
+# script-defined Dataset subclass does. Dropping the hook and using
+# parent-side worker introspection only.
 loader = DataLoader(
     ds,
     batch_size=bs,
@@ -132,7 +128,6 @@ loader = DataLoader(
     persistent_workers=(pw and nw > 0),
     shuffle=False,
     drop_last=False,
-    worker_init_fn=_worker_init if nw > 0 else None,
 )
 setup_seconds = time.time() - t_setup_start
 _log(f"DataLoader constructed in {setup_seconds:.2f}s; fetching {nb} batch(es)...")
