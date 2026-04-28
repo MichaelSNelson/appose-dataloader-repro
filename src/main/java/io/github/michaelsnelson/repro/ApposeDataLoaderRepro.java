@@ -9,8 +9,14 @@ import org.apposed.appose.Service.TaskStatus;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Minimal reproducer: PyTorch DataLoader with num_workers &gt; 0 hangs when run
@@ -43,6 +49,27 @@ public class ApposeDataLoaderRepro {
                 .logDebug()
                 .build();
         log("env.base = " + env.base());
+
+        // Deploy sitecustomize.py into the env's site-packages BEFORE
+        // starting the Appose service. Python imports sitecustomize during
+        // interpreter startup of EVERY interpreter that finds it on
+        // sys.path -- including the ones that multiprocessing.spawn
+        // launches via subprocess.Popen on Windows. That gives us
+        // child-visible instrumentation that class-level monkey-patches
+        // in the parent task script cannot reach.
+        String siteCustomize = readResource("/sitecustomize.py");
+        List<Path> deployed = deploySitecustomize(Paths.get(env.base()), siteCustomize);
+        if (deployed.isEmpty()) {
+            log("WARNING: could not locate site-packages under " + env.base()
+                    + " -- child-side instrumentation will not be available");
+        } else {
+            for (Path p : deployed) {
+                log("Deployed sitecustomize.py to " + p);
+            }
+            log("Child-side log will be written to "
+                    + System.getProperty("java.io.tmpdir")
+                    + "appose-dataloader-sitecustomize.log");
+        }
 
         try (Service py = env.python()) {
             py.debug(msg -> System.out.println("[py-stderr] " + msg));
@@ -124,6 +151,35 @@ public class ApposeDataLoaderRepro {
         }
 
         return new Result(task.status, task.error, new LinkedHashMap<>(task.outputs), elapsed);
+    }
+
+    /**
+     * Walks the env tree looking for site-packages directories and writes
+     * sitecustomize.py to each one found. Pixi env layouts:
+     *   Windows: &lt;env_base&gt;/.pixi/envs/default/Lib/site-packages/
+     *   Unix:    &lt;env_base&gt;/.pixi/envs/default/lib/python3.X/site-packages/
+     * We don't hardcode either; we walk and write to whatever site-packages
+     * directories appear under the env base.
+     */
+    private static List<Path> deploySitecustomize(Path envBase, String content)
+            throws IOException {
+        if (!Files.isDirectory(envBase)) {
+            return List.of();
+        }
+        try (Stream<Path> walk = Files.walk(envBase, 6)) {
+            List<Path> sitePackages = walk
+                    .filter(Files::isDirectory)
+                    .filter(p -> p.getFileName() != null
+                            && "site-packages".equals(p.getFileName().toString()))
+                    .collect(Collectors.toList());
+            for (Path sp : sitePackages) {
+                Path target = sp.resolve("sitecustomize.py");
+                Files.writeString(target, content, StandardCharsets.UTF_8);
+            }
+            return sitePackages.stream()
+                    .map(sp -> sp.resolve("sitecustomize.py"))
+                    .collect(Collectors.toList());
+        }
     }
 
     private static String readResource(String path) throws IOException {
