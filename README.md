@@ -26,14 +26,81 @@ no GPU, no real I/O, no model. The only variable is `num_workers`.
 
 ## Running
 
+### Linux / macOS
+
 ```bash
 ./gradlew run --args="60"
 ```
+
+### Windows
+
+Use the bundled `gradlew.bat` from `cmd.exe` or PowerShell. Either of these
+works (PowerShell needs the leading `.\` for non-PATH executables):
+
+```cmd
+gradlew.bat run --args="60"
+```
+
+```powershell
+.\gradlew.bat run --args="60"
+```
+
+Requirements on Windows:
+
+- JDK 21+ visible on `PATH`, or `JAVA_HOME` pointing at one. Verify with
+  `java --version`.
+- A working internet connection on first run. Pixi will download a 1-2 GB
+  Python + PyTorch CPU bundle into `.pixi\` next to the project; subsequent
+  runs reuse the cache.
+- Long-path support enabled on Windows is recommended; pixi environments
+  bury wheels several layers deep. If gradle complains about path length,
+  enable long paths via `gpedit` or the registry, or run from a short-path
+  directory like `C:\repro\appose-dataloader-repro`.
+
+There is no QuPath involvement: this is a standalone Java program that
+embeds Appose directly, the same way QuPath does. No hardware needed.
+
+### Argument
 
 `60` is the hang timeout in seconds for the `num_workers=2` case. The
 baseline (`num_workers=0`) has its own 30-second timeout, which is only
 there to catch a broken environment; it should complete in well under a
 second.
+
+### Reading the diagnostic output
+
+The Python task writes a side-channel log that captures what spawned
+DataLoader children see, even when the parent hangs. The path is printed
+to stderr near the top of the run as:
+
+```
+[py-stderr] [py] CHILD_LOG_PATH=/tmp/appose-dataloader-child-12345.log
+```
+
+On Windows it lands in `%TEMP%\appose-dataloader-child-<pid>.log`. Open it
+after the run -- the file is most informative on a hang, where it shows
+how far the spawned/forked DataLoader children got before deadlocking.
+
+The log instruments two functions, in BOTH the parent and any children
+that re-import the script under `spawn`:
+
+- `multiprocessing.process.BaseProcess._bootstrap` -- entry point of every
+  child process.
+- `multiprocessing.util._close_stdin` -- the function carlosuc3m identified
+  as the Linux fork-path deadlock site
+  ([apposed/appose#31](https://github.com/apposed/appose/issues/31)).
+
+What the log answers:
+
+1. **Does the spawned/forked child reach `_bootstrap` at all?** A missing
+   ENTER line means it dies before the child's bootstrap (e.g. import
+   failure under spawn re-import).
+2. **Does `_close_stdin` block?** A `BEFORE` with no matching `AFTER`
+   means the same deadlock seen on Linux is biting on this platform too.
+   `BEFORE` + `AFTER` in milliseconds means the deadlock is somewhere
+   else (PyTorch worker init, mp queue handshake, etc.).
+3. **What does `sys.stdin` look like in the child?** Same handle as the
+   parent or a fresh one. Hints at handle inheritance vs re-open.
 
 Exit codes:
 

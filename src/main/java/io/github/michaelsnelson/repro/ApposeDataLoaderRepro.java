@@ -86,7 +86,16 @@ public class ApposeDataLoaderRepro {
         inputs.put("persistent", true);
 
         Task task = py.task(script, inputs);
-        task.listen(event -> log("[evt] " + event.responseType + " status=" + task.status));
+        task.listen(event -> {
+            log("[evt] " + event.responseType + " status=" + task.status);
+            // Surface the child-log path as soon as the script reaches the
+            // line that publishes it (it ends up in task.outputs even on
+            // hang because we set it before constructing the DataLoader).
+            Object cl = task.outputs.get("child_log_path");
+            if (cl != null) {
+                log("[child_log] " + cl);
+            }
+        });
 
         long t0 = System.nanoTime();
         Thread waiter = new Thread(() -> {
