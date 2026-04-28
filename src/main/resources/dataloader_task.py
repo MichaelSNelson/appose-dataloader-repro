@@ -161,7 +161,7 @@ def _poll_workers(loader_ref, deadline):
         _clog("POLL deadline reached; workers still alive throughout")
 _poll_thread = _threading.Thread(
     target=_poll_workers,
-    args=(loader, time.time() + 300),
+    args=(loader, time.time() + 900),
     daemon=True,
     name="appose-repro-worker-poller",
 )
