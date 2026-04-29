@@ -136,6 +136,47 @@ pickle error is recorded here because it's a separate gotcha worth
 documenting: any user who defines their dataset class inside an Appose
 task script will see that error on Windows / macOS rather than the hang.
 
+### Windows root cause (consolidated April 2026 findings)
+
+After four instrumented runs at 60 s, 300 s, 900 s, and 900 s-with-Defender-
+disabled timeouts, with side-channel logging via `sitecustomize.py` to see
+into spawn children:
+
+1. **`_close_stdin` does NOT block on Windows.** Returns in 0.0000 s in
+   every spawn child. The Linux deadlock mechanism described in
+   [apposed/appose#31](https://github.com/apposed/appose/issues/31) is not
+   what's biting Windows users.
+2. **Workers reach `Process.run` with `target=_worker_loop`** when given
+   enough time. Whatever's broken is downstream of `_bootstrap`.
+3. **Child `python.exe` interpreter startup is blocked until the parent
+   Appose task ends.** Time from `iter(loader)` to the child's
+   `sitecustomize.py` firing equals the test timeout to the second:
+
+   | Test timeout | iter -> child sitecustomize |
+   |---|---|
+   |  60 s |  62 s |
+   | 300 s | 300 s |
+   | 900 s | 900 s |
+   | 900 s, Windows Defender entirely disabled | 900 s |
+
+   That perfect correlation rules out cold startup cost, antivirus
+   scanning, and OS-level process-launch latency. Children are blocked on
+   *something the parent worker holds* and proceed only after the parent
+   task is cancelled / the Python service is torn down.
+4. **Plausible mechanism (not yet proven):** filesystem locks on
+   `site-packages` / `__pycache__`. Windows holds read locks more
+   aggressively than Linux; a pixi env's heavy Python tree imported by the
+   long-running parent could lock files needed by the child's interpreter
+   init. Defender is not the cause; could still be OneDrive sync,
+   third-party EDR, or a Windows job-object inheritance issue.
+5. **Implication for issue #31's proposed fix.** The private-`_appose_stdin`
+   + `sys.stdin = devnull` change closes Linux cleanly and is safe on
+   Windows, but won't unblock Windows on its own -- children there don't
+   even reach `_close_stdin` while the parent is alive, so changing what
+   they'd see if they did doesn't help. Windows likely needs separate work
+   focused on what handles / locks the Appose worker holds across a
+   long-running task.
+
 ```
 [java] === Running task with num_workers=0 (timeout 30s) ===
 [py] torch=2.10.0 platform=linux pid=... start_method=None num_workers=0 ...
