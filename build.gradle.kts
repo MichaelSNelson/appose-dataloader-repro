@@ -18,7 +18,7 @@ java {
 }
 
 dependencies {
-    implementation("org.apposed:appose:0.11.0")
+    implementation("org.apposed:appose:0.12.0")
     implementation("org.slf4j:slf4j-simple:2.0.13")
 }
 

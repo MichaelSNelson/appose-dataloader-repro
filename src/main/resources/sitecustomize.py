@@ -92,3 +92,35 @@ try:
           "_bootstrap, run)")
 except Exception as _e:
     _slog(f"instrumentation install failed: {type(_e).__name__}: {_e}")
+
+# Stack-dump instrumentation, platform-dependent:
+#   POSIX: `kill -USR1 <pid>` appends every Python thread's stack to the
+#     shared stacks log. Fork children inherit both the handler and the
+#     O_APPEND file descriptor, so one mechanism covers the Appose worker
+#     and its DataLoader children. No ptrace needed (works with yama
+#     ptrace_scope=1, where py-spy attach is refused).
+#   Windows: no SIGUSR1 / faulthandler.register. Instead a watchdog thread
+#     dumps all stacks to a per-pid file every 60 s. A process hung during
+#     startup or bootstrap thus self-reports where it is stuck, including
+#     spawn children (which import sitecustomize during interpreter init).
+try:
+    import faulthandler
+    import signal as _signal
+
+    if hasattr(faulthandler, "register") and hasattr(_signal, "SIGUSR1"):
+        _STACKS_PATH = os.path.join(tempfile.gettempdir(),
+                                    "appose-dataloader-stacks.log")
+        _stacks_file = open(_STACKS_PATH, "a")
+        faulthandler.register(_signal.SIGUSR1, file=_stacks_file,
+                              all_threads=True)
+        _slog(f"faulthandler SIGUSR1 dump -> {_STACKS_PATH}")
+    else:
+        _STACKS_PATH = os.path.join(
+            tempfile.gettempdir(),
+            f"appose-dataloader-stacks-{os.getpid()}.log",
+        )
+        _stacks_file = open(_STACKS_PATH, "a")
+        faulthandler.dump_traceback_later(60, repeat=True, file=_stacks_file)
+        _slog(f"faulthandler 60s watchdog dump -> {_STACKS_PATH}")
+except Exception as _e:
+    _slog(f"faulthandler install failed: {type(_e).__name__}: {_e}")
