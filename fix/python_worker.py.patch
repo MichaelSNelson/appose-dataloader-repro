@@ -1,0 +1,83 @@
+--- a/src/appose/python_worker.py	2026-07-03 12:46:26.989558612 -0500
++++ b/src/appose/python_worker.py	2026-07-03 12:48:28.605550547 -0500
+@@ -16,6 +16,7 @@
+ from __future__ import annotations
+ 
+ import ast
++import io
+ import os
+ import sys
+ import traceback
+@@ -28,6 +29,13 @@
+ from appose.util import message
+ from appose.util.message import Args
+ 
++# Private duplicates of the Appose protocol streams. main() sets these up so
++# that the real fd 0 / fd 1 can be pointed at os.devnull, preventing child
++# processes spawned by task code (e.g. PyTorch DataLoader workers with
++# num_workers > 0) from inheriting Appose's protocol pipes. See apposed/appose#31.
++_protocol_in: "io.TextIOWrapper | None" = None
++_protocol_out: "io.TextIOWrapper | None" = None
++
+ 
+ class Task:
+     def __init__(
+@@ -198,10 +206,14 @@
+ 
+     def _process_input(self) -> None:
+         while True:
+-            try:
+-                line = input().strip()
+-            except EOFError:
++            # Read protocol requests from the private stdin duplicate, not the
++            # global sys.stdin -- which main() has repointed at os.devnull.
++            line = _protocol_in.readline()
++            if line == "":
++                # EOF: the calling process closed the protocol pipe.
+                 line = None
++            else:
++                line = line.strip()
+             if not line:
+                 self.running = False
+                 return
+@@ -256,6 +268,40 @@
+ 
+ 
+ def main() -> None:
++    # Separate the Appose protocol channel from this process's standard streams
++    # at the file-descriptor level, so that child processes spawned by task code
++    # do not inherit the protocol pipes and deadlock. This is the fix for
++    # apposed/appose#31 (PyTorch DataLoader with num_workers > 0 hangs before
++    # the first batch).
++    #
++    # Keep private duplicates of fd 0 (protocol in) and fd 1 (protocol out) for
++    # JSON messaging, then point the real fd 0 / fd 1 at os.devnull. Two distinct
++    # failure modes are closed by doing this at BOTH the fd level and the
++    # sys.std* object level:
++    #   * Linux (fork): the child inherits the parent's sys.stdin object and
++    #     hangs in multiprocessing.util._close_stdin() closing the protocol pipe.
++    #     Repointing sys.stdin at devnull makes that close instant.
++    #   * Windows/macOS (spawn): the child is a fresh interpreter that inherits
++    #     OS handles, not Python objects, and hangs during interpreter init
++    #     flushing/seeking the inherited protocol handle. dup2(devnull) at the
++    #     fd level makes it inherit a harmless stream instead.
++    global _protocol_in, _protocol_out
++    _protocol_in = io.TextIOWrapper(
++        io.FileIO(os.dup(0), "r"), encoding="utf-8"
++    )
++    _protocol_out = io.TextIOWrapper(
++        io.FileIO(os.dup(1), "w"), encoding="utf-8", line_buffering=True
++    )
++    _devnull = os.open(os.devnull, os.O_RDWR)
++    os.dup2(_devnull, 0)
++    os.dup2(_devnull, 1)
++    os.close(_devnull)
++    sys.stdin = open(os.devnull, "r")
++    # Route sys.stdout (used by _respond's print, and by any stray user print)
++    # to the private protocol out, preserving existing behavior now that the
++    # real fd 1 points at devnull.
++    sys.stdout = _protocol_out
++
+     worker = Worker()
+ 
+     # Execute init script if provided via environment variable.
